@@ -40,18 +40,35 @@ program unit_test_solar_geometry_mo
   i0 = extraterrestrial_radiation_wm2( TOKYO_LAT, TOKYO_LON, doy_summer, 0.0_real64 )
   call check_range( 'night I0 == 0', i0, -0.001_real64, 0.001_real64, nfail )
 
-  ! ---- 最適傾斜角（南向き固定、年間最大）----
+  ! ---- 入射角（任意方位・傾斜）----
+  ! 春分の太陽南中で、傾斜=緯度の南向き面はほぼ正対（入射角≈0）
   block
-    real(real64) :: t_tokyo, t_naha, t_wakkanai, t_flat
-    t_tokyo    = optimal_tilt_deg( TOKYO_LAT, TOKYO_LON )            ! 東京   lat 35.7
-    t_naha     = optimal_tilt_deg( 26.20_real64, 127.69_real64 )    ! 那覇   lat 26.2
-    t_wakkanai = optimal_tilt_deg( 45.42_real64, 141.68_real64 )    ! 稚内   lat 45.4
-    call check_range( 'optimal tilt Tokyo (deg)', t_tokyo, 18.0_real64, 36.0_real64, nfail )
-    call check_range( 'lower lat (Naha) shallower',  t_naha,     0.0_real64, t_tokyo - 1.0_real64, nfail )
-    call check_range( 'higher lat (Wakkanai) steeper', t_wakkanai, t_tokyo + 1.0_real64, 90.0_real64, nfail )
-    ! 散乱比率を上げると最適傾斜角は浅くなる
-    t_flat = optimal_tilt_deg( TOKYO_LAT, TOKYO_LON, 0.8_real64 )
-    call check_range( 'higher diffuse => flatter', t_flat, 0.0_real64, t_tokyo - 1.0_real64, nfail )
+    integer      :: doy_eq
+    real(real64) :: inc_noon, solar_noon
+    doy_eq     = day_of_year( 2026, 3, 20 )
+    solar_noon = 12.0_real64 + (135.0_real64 - TOKYO_LON) * 4.0_real64 / 60.0_real64
+    inc_noon   = incidence_angle_deg( TOKYO_LAT, TOKYO_LON, doy_eq, solar_noon, TOKYO_LAT, 180.0_real64 )
+    call check_range( 'equinox noon incidence (tilt=lat,south) ~0', inc_noon, 0.0_real64, 8.0_real64, nfail )
+  end block
+
+  ! ---- 最適傾斜角（任意方位）----
+  block
+    real(real64) :: t_south, t_naha, t_wakkanai, t_flat, t_se, t_east, t_west
+    t_south    = optimal_tilt_deg( TOKYO_LAT, TOKYO_LON )                       ! 真南（既定）
+    t_naha     = optimal_tilt_deg( 26.20_real64, 127.69_real64 )               ! 那覇   lat 26.2
+    t_wakkanai = optimal_tilt_deg( 45.42_real64, 141.68_real64 )               ! 稚内   lat 45.4
+    call check_range( 'optimal tilt Tokyo south (deg)', t_south, 18.0_real64, 36.0_real64, nfail )
+    call check_range( 'lower lat (Naha) shallower',  t_naha,     0.0_real64, t_south - 1.0_real64, nfail )
+    call check_range( 'higher lat (Wakkanai) steeper', t_wakkanai, t_south + 1.0_real64, 90.0_real64, nfail )
+    ! 散乱比率↑ → 浅く（keyword 引数）
+    t_flat = optimal_tilt_deg( TOKYO_LAT, TOKYO_LON, diffuse_fraction=0.8_real64 )
+    call check_range( 'higher diffuse => flatter', t_flat, 0.0_real64, t_south - 1.0_real64, nfail )
+    ! 任意方位: 南東(135)は南より浅い、東(90)と西(270)はほぼ対称
+    t_se   = optimal_tilt_deg( TOKYO_LAT, TOKYO_LON, panel_azimuth_deg=135.0_real64 )
+    t_east = optimal_tilt_deg( TOKYO_LAT, TOKYO_LON, panel_azimuth_deg=90.0_real64 )
+    t_west = optimal_tilt_deg( TOKYO_LAT, TOKYO_LON, panel_azimuth_deg=270.0_real64 )
+    call check_range( 'SE (135) tilt <= south', t_se, 0.0_real64, t_south, nfail )
+    call check_range( 'E/W near symmetric', t_east - t_west, -3.0_real64, 3.0_real64, nfail )
   end block
 
   print *, '----------------------------------------'

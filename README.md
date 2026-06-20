@@ -22,7 +22,8 @@
 | `solar_azimuth_deg(lat_deg, lon_deg, doy, hour_jst)` | `real(real64)` | 太陽方位角（度、**北から時計回り**。東=90, 南=180, 西=270） |
 | `extraterrestrial_radiation_wm2(lat_deg, lon_deg, doy, hour_jst)` | `real(real64)` | 大気外水平面日射量（W/m²）。太陽が地平線以下なら 0 |
 | `day_of_year(year, month, day)` | `integer` | 年間通日（1–366、閏年対応） |
-| `optimal_tilt_deg(lat_deg, lon_deg [, diffuse_fraction])` | `real(real64)` | **最適傾斜角**（度）。南向き固定パネルで年間日射量を最大化する傾斜角。下記参照 |
+| `incidence_angle_deg(lat_deg, lon_deg, doy, hour_jst, tilt_deg, panel_azimuth_deg)` | `real(real64)` | **入射角**（度）。任意方位・傾斜面と太陽光線のなす角。傾斜面日射（transposition）の基本量。下記参照 |
+| `optimal_tilt_deg(lat_deg, lon_deg [, panel_azimuth_deg] [, diffuse_fraction])` | `real(real64)` | **最適傾斜角**（度）。指定方位の固定パネルで年間日射量を最大化する傾斜角。下記参照 |
 
 ### 引数
 
@@ -90,7 +91,11 @@ POA = (1 - fd)·GHI·Rb           直達（傾斜面）   Rb = cosθ_tilt / sin(
 |---|---|---|
 | `lat_deg` | — | 緯度（北緯, 度） |
 | `lon_deg` | — | 経度（東経, 度） |
+| `panel_azimuth_deg` | 180（真南） | 任意。パネル方位（北=0, 東=90, 南=180, 西=270） |
 | `diffuse_fraction` | 0.5 | 任意。年間散乱日射比率。大きいほど最適傾斜角は浅くなる |
+
+> 任意引数は keyword で指定する: `optimal_tilt_deg( lat, lon, panel_azimuth_deg=135.0_8 )`。
+> 例（東京）: 真南→24°、南東 135°→21°（南より浅い）、東 90°≈西 270°（対称）。
 
 ### 結果の目安（既定 fd = 0.5）
 
@@ -113,6 +118,39 @@ POA = (1 - fd)·GHI·Rb           直達（傾斜面）   Rb = cosθ_tilt / sin(
 - **南向き固定のみ**（方位角は真南を仮定）。東西向き屋根や追尾架台は対象外。
 - 計算量は約 91（傾斜角）× 8760（時間）回の太陽位置評価。`pure` 関数で副作用なく
   数十 ms で完了する。
+
+## 入射角と傾斜面日射（transposition）
+
+`incidence_angle_deg( lat_deg, lon_deg, doy, hour_jst, tilt_deg, panel_azimuth_deg )`
+は任意方位・傾斜面と太陽光線のなす **入射角 θ**（度）を返す。PV の傾斜面日射
+（transposition: 水平面日射 → 傾斜面日射）モデルの基本量である。
+
+```
+cosθ = sin(h)·cos(β) + cos(h)·sin(β)·cos(γs - γp)
+       h=太陽高度角, β=傾斜角, γs=太陽方位, γp=パネル方位
+```
+
+### 高精度 transposition のロードマップ
+
+予報精度（＝当社の商品価値）向上のため、傾斜面全天日射 POA を次式で構成する:
+
+```
+POA = DNI·cosθ              直達（incidence_angle_deg が基盤）
+    + DHI·R_d(model)        天空散乱
+    + GHI·ρ·(1 - cosβ)/2    地面反射（アルベド ρ）
+```
+
+天空散乱係数 `R_d` の世界標準モデル（精度の低い順）:
+
+| モデル | 内容 | 精度 |
+|---|---|---|
+| 等方（Liu–Jordan） | `(1+cosβ)/2` のみ | 基準 |
+| Hay–Davies | 太陽周辺光（circumsolar）を異方的に考慮 | 良 |
+| Reindl | Hay–Davies + 地平輝度 | 良＋ |
+| **Perez** | circumsolar + 地平輝度を係数ビンで精緻化 | **最良（PV 業界標準）** |
+
+実測/予報の `GHI, DHI, DNI`（または `GHI` を Erbs 等で分解）を入力に上記を実装予定。
+現状の `optimal_tilt_deg` の等方近似は設計時の傾斜角推定用であり、予報には Perez を用いる。
 
 ## 「正午」と方位角についての注意
 

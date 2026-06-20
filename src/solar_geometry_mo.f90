@@ -9,7 +9,7 @@ module solar_geometry_mo
   private
   public :: solar_elevation_deg, solar_azimuth_deg, &
             extraterrestrial_radiation_wm2, day_of_year, &
-            optimal_tilt_deg
+            incidence_angle_deg, optimal_tilt_deg
 
   real(real64), parameter :: PI      = 3.14159265358979323846_real64
   real(real64), parameter :: DEG2RAD = PI / 180.0_real64
@@ -155,28 +155,45 @@ contains
   end function
 
   !-----------------------------------------------------------------
-  ! 南向き傾斜面への直達日射入射角の余弦（cosθ）。
-  !   南向き・傾斜角 β の面は「等価緯度 = 緯度 - β」で評価できる。
+  ! 任意方位・傾斜面への太陽光線の入射角余弦 cos(θ)。
+  !   tilt_deg          : 傾斜角（水平=0, 鉛直=90, 度）
+  !   panel_azimuth_deg : パネル方位（北=0, 東=90, 南=180, 西=270;
+  !                       solar_azimuth_deg と同基準）
+  !   cosθ = sin(h)·cos(β) + cos(h)·sin(β)·cos(γs - γp)
+  !          h=太陽高度角, β=傾斜角, γs=太陽方位, γp=パネル方位
   !-----------------------------------------------------------------
-  pure real(real64) function cos_incidence_south_tilt( lat_deg, tilt_deg, doy, hour_jst, lon_deg )
-    real(real64), intent(in) :: lat_deg, tilt_deg, hour_jst, lon_deg
+  pure real(real64) function cos_incidence( lat_deg, lon_deg, doy, hour_jst, tilt_deg, panel_azimuth_deg )
+    real(real64), intent(in) :: lat_deg, lon_deg, hour_jst, tilt_deg, panel_azimuth_deg
     integer,      intent(in) :: doy
-    real(real64) :: dec_r, ha_r, phib_r
-    dec_r  = solar_declination_rad( doy )
-    ha_r   = hour_angle_rad( hour_jst, lon_deg, doy )
-    phib_r = (lat_deg - tilt_deg) * DEG2RAD            ! 等価緯度 φ-β
-    cos_incidence_south_tilt = sin(dec_r) * sin(phib_r) &
-                             + cos(dec_r) * cos(phib_r) * cos(ha_r)
+    real(real64) :: elev_r, saz_deg, b_r
+    elev_r  = solar_elevation_deg( lat_deg, lon_deg, doy, hour_jst ) * DEG2RAD
+    saz_deg = solar_azimuth_deg( lat_deg, lon_deg, doy, hour_jst )
+    b_r     = tilt_deg * DEG2RAD
+    cos_incidence = sin(elev_r) * cos(b_r) &
+                  + cos(elev_r) * sin(b_r) * cos( (saz_deg - panel_azimuth_deg) * DEG2RAD )
   end function
 
   !-----------------------------------------------------------------
-  ! 南向き傾斜面の年間傾斜面日射量（相対値, isotropic sky モデル）。
-  !   POA = 直達(傾斜面) + 散乱(等方天空)。大気外水平面日射を全天日射の
-  !   代理とし、散乱比率 fd で直達/散乱に配分。晴天指数 Kt は一様と仮定し
-  !   最大化では相殺するため省略（傾斜角の最適化のみが目的）。
+  ! 入射角（度）— 任意方位・傾斜面と太陽光線のなす角。
+  !   傾斜面日射（transposition: 等方/Hay-Davies/Perez 等）の基本量。
+  !   背面側（太陽がパネル裏）では 90° 超を返す。
   !-----------------------------------------------------------------
-  pure real(real64) function annual_poa_south( lat_deg, lon_deg, tilt_deg, fd )
-    real(real64), intent(in) :: lat_deg, lon_deg, tilt_deg, fd
+  pure real(real64) function incidence_angle_deg( lat_deg, lon_deg, doy, hour_jst, tilt_deg, panel_azimuth_deg )
+    real(real64), intent(in) :: lat_deg, lon_deg, hour_jst, tilt_deg, panel_azimuth_deg
+    integer,      intent(in) :: doy
+    real(real64) :: ci
+    ci = cos_incidence( lat_deg, lon_deg, doy, hour_jst, tilt_deg, panel_azimuth_deg )
+    incidence_angle_deg = acos( max(-1.0_real64, min(1.0_real64, ci)) ) * RAD2DEG
+  end function
+
+  !-----------------------------------------------------------------
+  ! 任意方位・傾斜面の年間傾斜面日射量（相対値, isotropic sky モデル）。
+  !   最適傾斜角探索用の設計時近似。大気外水平面日射を全天日射の代理に、
+  !   散乱比率 fd で直達/散乱に配分する。
+  !   ※ 予報精度向上の transposition（Perez 等）は別途実装予定。
+  !-----------------------------------------------------------------
+  pure real(real64) function annual_poa( lat_deg, lon_deg, tilt_deg, panel_azimuth_deg, fd )
+    real(real64), intent(in) :: lat_deg, lon_deg, tilt_deg, panel_azimuth_deg, fd
     integer      :: doy, ih
     real(real64) :: hour, elev, sinelev, g0h, cosi, beam, diff, view_tilt, total
     view_tilt = (1.0_real64 + cos(tilt_deg * DEG2RAD)) * 0.5_real64   ! 天空率 (1+cosβ)/2
@@ -188,7 +205,7 @@ contains
         if ( elev <= 0.0_real64 ) cycle                ! 夜間はスキップ
         sinelev = sin(elev * DEG2RAD)
         g0h     = extraterrestrial_radiation_wm2( lat_deg, lon_deg, doy, hour )  ! 水平面・大気外
-        cosi    = cos_incidence_south_tilt( lat_deg, tilt_deg, doy, hour, lon_deg )
+        cosi    = cos_incidence( lat_deg, lon_deg, doy, hour, tilt_deg, panel_azimuth_deg )
         ! 直達(傾斜面) = GHI(1-fd) * Rb,  Rb = cosθ/sinh (背面側 cosθ<0 は 0)
         beam = (1.0_real64 - fd) * g0h * max(0.0_real64, cosi) / sinelev
         ! 散乱(等方天空) = GHI*fd * (1+cosβ)/2
@@ -196,27 +213,32 @@ contains
         total = total + beam + diff
       end do
     end do
-    annual_poa_south = total
+    annual_poa = total
   end function
 
   !-----------------------------------------------------------------
-  ! 最適傾斜角（度）— 南向き固定設置で年間日射量を最大化する傾斜角。
+  ! 最適傾斜角（度）— 指定方位の固定設置で年間日射量を最大化する傾斜角。
   !   lat_deg / lon_deg : 設置地点（北緯・東経, 度）
+  !   panel_azimuth_deg : 任意。パネル方位（既定 180 = 真南）。
+  !                       北=0, 東=90, 南=180, 西=270。
   !   diffuse_fraction  : 任意。年間散乱日射比率（既定 0.5）。
-  !                       大きいほど最適傾斜角は浅くなる。
   !   返り値            : 0–90 度（1 度刻みで探索）。
+  !   ※ 等方天空・大気外日射近似による設計時推定。予報用の高精度
+  !     transposition（Perez 等）は別途。
   !-----------------------------------------------------------------
-  pure real(real64) function optimal_tilt_deg( lat_deg, lon_deg, diffuse_fraction )
+  pure real(real64) function optimal_tilt_deg( lat_deg, lon_deg, panel_azimuth_deg, diffuse_fraction )
     real(real64), intent(in)           :: lat_deg, lon_deg
-    real(real64), intent(in), optional :: diffuse_fraction
-    real(real64) :: fd, poa, best_poa
+    real(real64), intent(in), optional :: panel_azimuth_deg, diffuse_fraction
+    real(real64) :: az, fd, poa, best_poa
     integer      :: i, best_i
+    az = 180.0_real64                                  ! 既定: 真南
+    if ( present(panel_azimuth_deg) ) az = panel_azimuth_deg
     fd = DIFFUSE_FRACTION_DEFAULT
     if ( present(diffuse_fraction) ) fd = diffuse_fraction
     best_poa = -1.0_real64
     best_i   = 0
     do i = 0, 90
-      poa = annual_poa_south( lat_deg, lon_deg, real(i, real64), fd )
+      poa = annual_poa( lat_deg, lon_deg, real(i, real64), az, fd )
       if ( poa > best_poa ) then
         best_poa = poa
         best_i   = i
