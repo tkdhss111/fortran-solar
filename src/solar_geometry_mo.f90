@@ -268,21 +268,30 @@ contains
   end function
 
   !-----------------------------------------------------------------
-  ! 晴天時全天日射（W/m2, Haurwitz 1945）。GHIcs = 1098·cosZ·exp(-0.059/cosZ)。
-  ! ※ Engerer2 の元適合は別の晴天モデル(TJ)。dktc/kde 経由で効くため、
-  !   高精度化時は適合と同一の晴天モデルへ差し替えることを推奨。
+  ! 晴天時全天日射（W/m2, ASHRAE / Threlkeld–Jordan "TJ" モデル）。
+  ! Engerer2 30分版の元適合と同一の晴天モデル（dktc/kde の整合のため）。
+  ! 係数 A,k,C は doy の正弦関数（角度は度）:
+  !   A = 1160 + 75·sin(360(doy-275)/365)   [W/m2]
+  !   k = 0.174 + 0.035·sin(360(doy-100)/365)
+  !   C = 0.095 + 0.040·sin(360(doy-100)/365)
+  ! DNIcs = A·exp(-k/cosZ),  GHIcs = DNIcs·(cosZ + C),  cosZ = sin(高度角)。
   !-----------------------------------------------------------------
   pure real(real64) function clear_sky_ghi_wm2( lat_deg, lon_deg, doy, hour_jst )
     real(real64), intent(in) :: lat_deg, lon_deg, hour_jst
     integer,      intent(in) :: doy
-    real(real64) :: elev, cosz
+    real(real64) :: elev, cosz, a, k, c, dnics, dd
     elev = solar_elevation_deg( lat_deg, lon_deg, doy, hour_jst )
     if ( elev <= 0.0_real64 ) then
       clear_sky_ghi_wm2 = 0.0_real64
       return
     end if
     cosz = sin(elev * DEG2RAD)                          ! cos(天頂角) = sin(高度角)
-    clear_sky_ghi_wm2 = 1098.0_real64 * cosz * exp( -0.059_real64 / cosz )
+    dd = real(doy, real64)
+    a = 1160.0_real64 + 75.0_real64  * sin( 360.0_real64*(dd-275.0_real64)/365.0_real64 * DEG2RAD )
+    k = 0.174_real64  + 0.035_real64 * sin( 360.0_real64*(dd-100.0_real64)/365.0_real64 * DEG2RAD )
+    c = 0.095_real64  + 0.040_real64 * sin( 360.0_real64*(dd-100.0_real64)/365.0_real64 * DEG2RAD )
+    dnics = a * exp( -k / cosz )
+    clear_sky_ghi_wm2 = dnics * ( cosz + c )
   end function
 
   !-----------------------------------------------------------------

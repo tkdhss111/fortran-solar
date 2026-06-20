@@ -167,8 +167,11 @@ poa = poa_from_ghi( ghi, lat, lon, doy, hour_jst, tilt_deg=30.0_8, panel_azimuth
 
 **精度に関する注意**:
 - `interval_min`（既定 **30**）で 30 分平均 GHI に整合（幾何量は区間中点で評価）。瞬時データは 0。
-- 晴天モデルは内蔵の簡易版 **Haurwitz**（`ktc`/`kde` 経由で効く）。Engerer2 元適合(TJ)と
-  厳密一致させたい場合は `clear_sky_ghi_wm2` を差し替える（係数は明示済みで容易）。
+- 晴天モデルは **TJ (ASHRAE/Threlkeld–Jordan)** を内蔵（Engerer2 30分版の元適合と同一。
+  A,k,C は doy の正弦関数）。`ktc`/`kde` の整合が取れる。
+- A/B 比較ハーネス: `examples/ab_decomposition/`（LFM GHI に対し Engerer2 vs Erbs の
+  POA 差を集計）。実データ 51,862 点では平均 |差| ≈ 0.85%、最大の乖離は中清明度
+  （GHI 500–800）帯に現れる。
 - Perez 係数は **allsitescomposite1990**（ソースに全値明示。要時 pvlib と照合可）。
 - 検証済み: 水平面で `poa_perez ≡ GHI`（厳密）、分離は `DHI + DNI·sin h ≡ GHI`（エネルギー保存）。
 
