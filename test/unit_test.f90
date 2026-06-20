@@ -71,6 +71,42 @@ program unit_test_solar_geometry_mo
     call check_range( 'E/W near symmetric', t_east - t_west, -3.0_real64, 3.0_real64, nfail )
   end block
 
+  ! ---- 直散分離（Engerer2/Erbs）+ Perez 傾斜面変換 ----
+  block
+    real(real64), parameter :: D2R = 3.14159265358979323846_real64 / 180.0_real64
+    real(real64) :: noon, ghics, dni, dhi, sinh, recon, poa_h
+    integer      :: doy_s
+    doy_s = day_of_year( 2026, 6, 21 )
+    noon  = 12.0_real64 + (135.0_real64 - TOKYO_LON) * 4.0_real64 / 60.0_real64  ! 太陽南中
+    sinh  = sin( solar_elevation_deg( TOKYO_LAT, TOKYO_LON, doy_s, noon ) * D2R )
+
+    ghics = clear_sky_ghi_wm2( TOKYO_LAT, TOKYO_LON, doy_s, noon )
+    call check_range( 'clear-sky GHI plausible (W/m2)', ghics, 700.0_real64, 1050.0_real64, nfail )
+
+    ! 晴天相当 GHI → kt 高 → Engerer2 Kd 小・DNI 大、エネルギー保存
+    call decompose_engerer2( ghics, TOKYO_LAT, TOKYO_LON, doy_s, noon, dni, dhi, interval_min = 0.0_real64 )
+    call check_range( 'clear-day diffuse fraction small', dhi/ghics, 0.0_real64, 0.45_real64, nfail )
+    call check_range( 'clear-day DNI substantial', dni, 400.0_real64, 1100.0_real64, nfail )
+    recon = dhi + dni * sinh
+    call check_range( 'engerer2 energy conservation', recon - ghics, -0.5_real64, 0.5_real64, nfail )
+
+    ! Perez 傾斜面: 水平面 (tilt=0) は GHI に厳密一致
+    poa_h = poa_perez( dni, dhi, ghics, TOKYO_LAT, TOKYO_LON, doy_s, noon, &
+                       0.0_real64, 180.0_real64, interval_min = 0.0_real64 )
+    call check_range( 'Perez horizontal == GHI', poa_h - ghics, -0.5_real64, 0.5_real64, nfail )
+
+    ! 曇天 (低 GHI) → ほぼ全散乱・DNI≈0
+    call decompose_engerer2( 80.0_real64, TOKYO_LAT, TOKYO_LON, doy_s, noon, dni, dhi, interval_min = 0.0_real64 )
+    call check_range( 'overcast diffuse fraction high', dhi/80.0_real64, 0.70_real64, 1.0_real64, nfail )
+    call check_range( 'overcast DNI small', dni, 0.0_real64, 120.0_real64, nfail )
+
+    ! Erbs も水平面で GHI 一致（比較経路の健全性）
+    call decompose_erbs( ghics, TOKYO_LAT, TOKYO_LON, doy_s, noon, dni, dhi, interval_min = 0.0_real64 )
+    poa_h = poa_perez( dni, dhi, ghics, TOKYO_LAT, TOKYO_LON, doy_s, noon, &
+                       0.0_real64, 180.0_real64, interval_min = 0.0_real64 )
+    call check_range( 'Erbs+Perez horizontal == GHI', poa_h - ghics, -0.5_real64, 0.5_real64, nfail )
+  end block
+
   print *, '----------------------------------------'
   if ( nfail == 0 ) then
     print *, 'ALL TESTS PASSED'

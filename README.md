@@ -130,9 +130,9 @@ cosθ = sin(h)·cos(β) + cos(h)·sin(β)·cos(γs - γp)
        h=太陽高度角, β=傾斜角, γs=太陽方位, γp=パネル方位
 ```
 
-### 高精度 transposition のロードマップ
+### GHI → POA パイプライン（実装済み・既定 Engerer2-30min + Perez）
 
-予報精度（＝当社の商品価値）向上のため、傾斜面全天日射 POA を次式で構成する:
+予報精度（＝当社の商品価値）のため、傾斜面全天日射 POA を次式で構成する:
 
 ```
 POA = DNI·cosθ              直達（incidence_angle_deg が基盤）
@@ -149,8 +149,28 @@ POA = DNI·cosθ              直達（incidence_angle_deg が基盤）
 | Reindl | Hay–Davies + 地平輝度 | 良＋ |
 | **Perez** | circumsolar + 地平輝度を係数ビンで精緻化 | **最良（PV 業界標準）** |
 
-実測/予報の `GHI, DHI, DNI`（または `GHI` を Erbs 等で分解）を入力に上記を実装予定。
-現状の `optimal_tilt_deg` の等方近似は設計時の傾斜角推定用であり、予報には Perez を用いる。
+LFM GPV は **GHI のみ**（`solar_radiation_wm2`, 30分平均）なので、GHI を分離してから
+変換する。実装関数（`solar_geometry_mo`、依存ゼロ）:
+
+| 関数 | 説明 |
+|---|---|
+| `decompose_engerer2( ghi, lat, lon, doy, hour_jst, dni, dhi [, interval_min] )` | **Engerer2(30分版係数)** 直散分離。GHI→DNI,DHI |
+| `decompose_erbs( … )` | Erbs(1982) 直散分離（A/B 比較用） |
+| `poa_perez( dni, dhi, ghi, lat, lon, doy, hour_jst, tilt, panel_azimuth [, albedo] [, interval_min] )` | **Perez(1990)** 傾斜面 POA |
+| `poa_from_ghi( ghi, lat, lon, doy, hour_jst, tilt, panel_azimuth [, albedo] [, interval_min] [, use_erbs] )` | GHI→POA 一括（既定 Engerer2+Perez。`use_erbs=.true.` で Erbs） |
+| `clear_sky_ghi_wm2` / `apparent_solar_time_h` / `air_mass_kastenyoung` | 補助量 |
+
+```fortran
+! LFM: solar_radiation_wm2 = GHI[W/m2]。jst から doy, hour_jst を算出して:
+poa = poa_from_ghi( ghi, lat, lon, doy, hour_jst, tilt_deg=30.0_8, panel_azimuth_deg=180.0_8 )
+```
+
+**精度に関する注意**:
+- `interval_min`（既定 **30**）で 30 分平均 GHI に整合（幾何量は区間中点で評価）。瞬時データは 0。
+- 晴天モデルは内蔵の簡易版 **Haurwitz**（`ktc`/`kde` 経由で効く）。Engerer2 元適合(TJ)と
+  厳密一致させたい場合は `clear_sky_ghi_wm2` を差し替える（係数は明示済みで容易）。
+- Perez 係数は **allsitescomposite1990**（ソースに全値明示。要時 pvlib と照合可）。
+- 検証済み: 水平面で `poa_perez ≡ GHI`（厳密）、分離は `DHI + DNI·sin h ≡ GHI`（エネルギー保存）。
 
 ## 「正午」と方位角についての注意
 

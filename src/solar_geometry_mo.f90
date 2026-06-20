@@ -9,7 +9,9 @@ module solar_geometry_mo
   private
   public :: solar_elevation_deg, solar_azimuth_deg, &
             extraterrestrial_radiation_wm2, day_of_year, &
-            incidence_angle_deg, optimal_tilt_deg
+            incidence_angle_deg, optimal_tilt_deg, &
+            apparent_solar_time_h, clear_sky_ghi_wm2, air_mass_kastenyoung, &
+            decompose_erbs, decompose_engerer2, poa_perez, poa_from_ghi
 
   real(real64), parameter :: PI      = 3.14159265358979323846_real64
   real(real64), parameter :: DEG2RAD = PI / 180.0_real64
@@ -245,6 +247,220 @@ contains
       end if
     end do
     optimal_tilt_deg = real(best_i, real64)
+  end function
+
+  !=================================================================
+  ! PV 傾斜面日射: GHI → DNI/DHI 分離 → Perez 傾斜面変換
+  !
+  ! 入力 GHI は LFM GPV の 30 分平均（区間 [hour-Δ, hour]）を想定する。
+  ! 幾何量は区間代表点（中点 hour - Δ/2）で評価する（平滑関数の区間平均
+  ! ≒ 中点値）。interval_min はその Δ（既定 30 分; 0 で瞬時値）。
+  !=================================================================
+
+  !-----------------------------------------------------------------
+  ! 視太陽時（hours, 0–24）。AST = 12 + 時角(度)/15。
+  !-----------------------------------------------------------------
+  pure real(real64) function apparent_solar_time_h( lon_deg, doy, hour_jst )
+    real(real64), intent(in) :: lon_deg, hour_jst
+    integer,      intent(in) :: doy
+    apparent_solar_time_h = 12.0_real64 &
+      + hour_angle_rad( hour_jst, lon_deg, doy ) * RAD2DEG / 15.0_real64
+  end function
+
+  !-----------------------------------------------------------------
+  ! 晴天時全天日射（W/m2, Haurwitz 1945）。GHIcs = 1098·cosZ·exp(-0.059/cosZ)。
+  ! ※ Engerer2 の元適合は別の晴天モデル(TJ)。dktc/kde 経由で効くため、
+  !   高精度化時は適合と同一の晴天モデルへ差し替えることを推奨。
+  !-----------------------------------------------------------------
+  pure real(real64) function clear_sky_ghi_wm2( lat_deg, lon_deg, doy, hour_jst )
+    real(real64), intent(in) :: lat_deg, lon_deg, hour_jst
+    integer,      intent(in) :: doy
+    real(real64) :: elev, cosz
+    elev = solar_elevation_deg( lat_deg, lon_deg, doy, hour_jst )
+    if ( elev <= 0.0_real64 ) then
+      clear_sky_ghi_wm2 = 0.0_real64
+      return
+    end if
+    cosz = sin(elev * DEG2RAD)                          ! cos(天頂角) = sin(高度角)
+    clear_sky_ghi_wm2 = 1098.0_real64 * cosz * exp( -0.059_real64 / cosz )
+  end function
+
+  !-----------------------------------------------------------------
+  ! 相対大気質量（Kasten–Young 1989）。zenith_deg = 天頂角（度）。
+  !-----------------------------------------------------------------
+  pure real(real64) function air_mass_kastenyoung( zenith_deg )
+    real(real64), intent(in) :: zenith_deg
+    real(real64) :: z
+    z = min( zenith_deg, 90.0_real64 )
+    air_mass_kastenyoung = 1.0_real64 / &
+      ( cos(z * DEG2RAD) + 0.50572_real64 * (96.07995_real64 - z)**(-1.6364_real64) )
+  end function
+
+  !-----------------------------------------------------------------
+  ! Perez(1990) 天空清明度 ε のビン番号（1–8）。
+  !-----------------------------------------------------------------
+  pure integer function perez_bin( eps )
+    real(real64), intent(in) :: eps
+    if      ( eps < 1.065_real64 ) then ; perez_bin = 1
+    else if ( eps < 1.230_real64 ) then ; perez_bin = 2
+    else if ( eps < 1.500_real64 ) then ; perez_bin = 3
+    else if ( eps < 1.950_real64 ) then ; perez_bin = 4
+    else if ( eps < 2.800_real64 ) then ; perez_bin = 5
+    else if ( eps < 4.500_real64 ) then ; perez_bin = 6
+    else if ( eps < 6.200_real64 ) then ; perez_bin = 7
+    else                                ; perez_bin = 8
+    end if
+  end function
+
+  !-----------------------------------------------------------------
+  ! Erbs(1982) 直散分離。GHI[W/m2] → DNI, DHI[W/m2]。
+  !-----------------------------------------------------------------
+  pure subroutine decompose_erbs( ghi, lat_deg, lon_deg, doy, hour_jst, dni, dhi, interval_min )
+    real(real64), intent(in)            :: ghi, lat_deg, lon_deg, hour_jst
+    integer,      intent(in)            :: doy
+    real(real64), intent(out)           :: dni, dhi
+    real(real64), intent(in), optional  :: interval_min
+    real(real64) :: iv, t_rep, elev, sinelev, g0h, kt, df
+    dni = 0.0_real64 ; dhi = 0.0_real64
+    iv = 30.0_real64 ; if ( present(interval_min) ) iv = interval_min
+    t_rep = hour_jst - iv / 120.0_real64
+    elev = solar_elevation_deg( lat_deg, lon_deg, doy, t_rep )
+    if ( elev <= 0.0_real64 .or. ghi <= 0.0_real64 ) return
+    sinelev = sin(elev * DEG2RAD)
+    g0h = extraterrestrial_radiation_wm2( lat_deg, lon_deg, doy, t_rep )
+    if ( g0h <= 0.0_real64 ) return
+    kt = max( 0.0_real64, min( 1.0_real64, ghi / g0h ) )
+    if      ( kt <= 0.22_real64 ) then
+      df = 1.0_real64 - 0.09_real64 * kt
+    else if ( kt <= 0.80_real64 ) then
+      df = 0.9511_real64 - 0.1604_real64*kt + 4.388_real64*kt**2 &
+         - 16.638_real64*kt**3 + 12.336_real64*kt**4
+    else
+      df = 0.165_real64
+    end if
+    dhi = df * ghi
+    dni = (ghi - dhi) / sinelev
+  end subroutine
+
+  !-----------------------------------------------------------------
+  ! Engerer2 直散分離（30 分版係数, Bright & Engerer 2019）。
+  !   Kd = C + (1-C)/(1+exp(B0+B1·kt+B2·ast+B3·zen+B4·dktc)) + B5·kde
+  !   kt=GHI/G0h, zen=天頂角[rad], ast=視太陽時[h], dktc=ktc-kt,
+  !   kde=max(0,(GHI-GHIcs)/GHI)。DHI=GHI·Kd, DNI=(GHI-DHI)/cos(zen)。
+  !-----------------------------------------------------------------
+  pure subroutine decompose_engerer2( ghi, lat_deg, lon_deg, doy, hour_jst, dni, dhi, interval_min )
+    real(real64), intent(in)            :: ghi, lat_deg, lon_deg, hour_jst
+    integer,      intent(in)            :: doy
+    real(real64), intent(out)           :: dni, dhi
+    real(real64), intent(in), optional  :: interval_min
+    real(real64), parameter :: C  = 0.0326750_real64, B0 = -4.8681_real64, &
+                               B1 = 8.1867_real64,    B2 = 0.015829_real64, &
+                               B3 = 0.0059922_real64, B4 = -4.0304_real64,  &
+                               B5 = 0.47371_real64
+    real(real64) :: iv, t_rep, elev, sinelev, zen_r, g0h, ghics, kt, ktc, dktc, kde, ast, kd
+    dni = 0.0_real64 ; dhi = 0.0_real64
+    iv = 30.0_real64 ; if ( present(interval_min) ) iv = interval_min
+    t_rep = hour_jst - iv / 120.0_real64
+    elev = solar_elevation_deg( lat_deg, lon_deg, doy, t_rep )
+    if ( elev <= 0.0_real64 .or. ghi <= 0.0_real64 ) return
+    sinelev = sin(elev * DEG2RAD)
+    zen_r   = (90.0_real64 - elev) * DEG2RAD
+    g0h = extraterrestrial_radiation_wm2( lat_deg, lon_deg, doy, t_rep )
+    if ( g0h <= 0.0_real64 ) return
+    kt    = ghi / g0h
+    ghics = clear_sky_ghi_wm2( lat_deg, lon_deg, doy, t_rep )
+    ktc   = ghics / g0h
+    dktc  = ktc - kt
+    kde   = 0.0_real64
+    if ( ghi > ghics ) kde = (ghi - ghics) / ghi
+    ast = apparent_solar_time_h( lon_deg, doy, t_rep )
+    kd  = C + (1.0_real64 - C) / &
+          ( 1.0_real64 + exp( B0 + B1*kt + B2*ast + B3*zen_r + B4*dktc ) ) + B5*kde
+    kd  = max( 0.0_real64, min( 1.0_real64, kd ) )
+    dhi = kd * ghi
+    dni = (ghi - dhi) / sinelev
+  end subroutine
+
+  !-----------------------------------------------------------------
+  ! Perez(1990) 傾斜面全天日射（W/m2, allsitescomposite1990 係数）。
+  !   POA = DNI·cosθ + DHI·R_d(Perez) + GHI·ρ·(1-cosβ)/2
+  !   albedo ρ 既定 0.2。tilt_deg/panel_azimuth_deg は incidence と同基準。
+  !-----------------------------------------------------------------
+  pure real(real64) function poa_perez( dni, dhi, ghi, lat_deg, lon_deg, doy, hour_jst, &
+                                        tilt_deg, panel_azimuth_deg, albedo, interval_min )
+    real(real64), intent(in)           :: dni, dhi, ghi, lat_deg, lon_deg, hour_jst, &
+                                          tilt_deg, panel_azimuth_deg
+    integer,      intent(in)           :: doy
+    real(real64), intent(in), optional :: albedo, interval_min
+    ! Perez allsitescomposite1990: 各 bin の [F11,F12,F13,F21,F22,F23]
+    real(real64), parameter :: PF(6,8) = reshape([ &
+      -0.0083117_real64,  0.5877285_real64, -0.0620636_real64, -0.0596012_real64,  0.0721249_real64, -0.0220216_real64, &
+       0.1299457_real64,  0.6825954_real64, -0.1513752_real64, -0.0189325_real64,  0.0659650_real64, -0.0288748_real64, &
+       0.3296958_real64,  0.4868735_real64, -0.2210958_real64,  0.0554140_real64, -0.0639588_real64, -0.0260542_real64, &
+       0.5682053_real64,  0.1874525_real64, -0.2951290_real64,  0.1088631_real64, -0.1519229_real64, -0.0139754_real64, &
+       0.8730280_real64, -0.3920403_real64, -0.3616149_real64,  0.2255647_real64, -0.4620442_real64,  0.0012448_real64, &
+       1.1326077_real64, -1.2367284_real64, -0.4118494_real64,  0.2877813_real64, -0.8230357_real64,  0.0558651_real64, &
+       1.0601591_real64, -1.5999137_real64, -0.3589221_real64,  0.2642124_real64, -1.1272340_real64,  0.1310694_real64, &
+       0.6777470_real64, -0.3272588_real64, -0.2504286_real64,  0.1561313_real64, -1.3765031_real64,  0.2506212_real64  &
+      ], [6,8])
+    real(real64) :: rho, iv, t_rep, elev, b_r, ground, zen_deg, zen_r, cosi, &
+                    g0n, eps, delta, am, f1, f2, a_term, b_term, sky, beam, kappa
+    integer :: ib
+    rho = 0.2_real64  ; if ( present(albedo) )       rho = albedo
+    iv  = 30.0_real64 ; if ( present(interval_min) ) iv  = interval_min
+    t_rep = hour_jst - iv / 120.0_real64
+    b_r   = tilt_deg * DEG2RAD
+    ground = max( 0.0_real64, ghi ) * rho * (1.0_real64 - cos(b_r)) * 0.5_real64
+    elev = solar_elevation_deg( lat_deg, lon_deg, doy, t_rep )
+    if ( elev <= 0.0_real64 ) then                     ! 夜間: 地面反射のみ
+      poa_perez = ground
+      return
+    end if
+    zen_deg = 90.0_real64 - elev
+    zen_r   = zen_deg * DEG2RAD
+    cosi = cos( incidence_angle_deg( lat_deg, lon_deg, doy, t_rep, tilt_deg, panel_azimuth_deg ) * DEG2RAD )
+    beam = dni * max( 0.0_real64, cosi )
+    sky  = 0.0_real64
+    if ( dhi > 0.0_real64 ) then
+      kappa = 1.041_real64
+      eps   = ( (dhi + dni)/dhi + kappa*zen_r**3 ) / ( 1.0_real64 + kappa*zen_r**3 )
+      am    = air_mass_kastenyoung( zen_deg )
+      g0n   = extraterrestrial_radiation_wm2( lat_deg, lon_deg, doy, t_rep ) / max( 1.0e-6_real64, sin(elev*DEG2RAD) )
+      delta = dhi * am / g0n
+      ib    = perez_bin( eps )
+      f1    = max( 0.0_real64, PF(1,ib) + PF(2,ib)*delta + PF(3,ib)*zen_r )
+      f2    =                  PF(4,ib) + PF(5,ib)*delta + PF(6,ib)*zen_r
+      a_term = max( 0.0_real64, cosi )
+      b_term = max( cos(85.0_real64*DEG2RAD), cos(zen_r) )
+      sky = dhi * ( 0.5_real64*(1.0_real64 - f1)*(1.0_real64 + cos(b_r)) &
+                  + f1*a_term/b_term + f2*sin(b_r) )
+      sky = max( 0.0_real64, sky )
+    end if
+    poa_perez = beam + sky + ground
+  end function
+
+  !-----------------------------------------------------------------
+  ! GHI → 傾斜面全天日射 POA（既定: Engerer2-30min 分離 + Perez 変換）。
+  !   use_erbs=.true. で分離を Erbs に切替（比較用）。
+  !-----------------------------------------------------------------
+  pure real(real64) function poa_from_ghi( ghi, lat_deg, lon_deg, doy, hour_jst, &
+                                           tilt_deg, panel_azimuth_deg, albedo, interval_min, use_erbs )
+    real(real64), intent(in)           :: ghi, lat_deg, lon_deg, hour_jst, tilt_deg, panel_azimuth_deg
+    integer,      intent(in)           :: doy
+    real(real64), intent(in), optional :: albedo, interval_min
+    logical,      intent(in), optional :: use_erbs
+    real(real64) :: dni, dhi, iv, alb
+    logical      :: erbs
+    iv   = 30.0_real64  ; if ( present(interval_min) ) iv  = interval_min
+    alb  = 0.2_real64   ; if ( present(albedo) )       alb = albedo
+    erbs = .false.      ; if ( present(use_erbs) )     erbs = use_erbs
+    if ( erbs ) then
+      call decompose_erbs( ghi, lat_deg, lon_deg, doy, hour_jst, dni, dhi, interval_min = iv )
+    else
+      call decompose_engerer2( ghi, lat_deg, lon_deg, doy, hour_jst, dni, dhi, interval_min = iv )
+    end if
+    poa_from_ghi = poa_perez( dni, dhi, ghi, lat_deg, lon_deg, doy, hour_jst, &
+                              tilt_deg, panel_azimuth_deg, albedo = alb, interval_min = iv )
   end function
 
 end module solar_geometry_mo
