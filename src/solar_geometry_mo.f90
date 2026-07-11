@@ -10,7 +10,8 @@ module solar_geometry_mo
   public :: solar_elevation_deg, solar_azimuth_deg, &
             extraterrestrial_radiation_wm2, day_of_year, &
             incidence_angle_deg, optimal_tilt_deg, &
-            apparent_solar_time_h, clear_sky_ghi_wm2, air_mass_kastenyoung, &
+            apparent_solar_time_h, clear_sky_ghi_wm2, cloudy_sky_ghi_wm2, &
+            air_mass_kastenyoung, &
             decompose_erbs, decompose_engerer2, poa_perez, poa_from_ghi
 
   real(real64), parameter :: PI      = 3.14159265358979323846_real64
@@ -292,6 +293,22 @@ contains
     c = 0.095_real64  + 0.040_real64 * sin( 360.0_real64*(dd-100.0_real64)/365.0_real64 * DEG2RAD )
     dnics = a * exp( -k / cosz )
     clear_sky_ghi_wm2 = dnics * ( cosz + c )
+  end function
+
+  !-----------------------------------------------------------------
+  ! 雲量を考慮した全天日射 GHI [W/m2]。Kasten–Czeplak (1980):
+  !   GHI = GHIcs · ( 1 − 0.75·N^3.4 ),  N = 全雲量（0–1）= cloud_cover_pct/100
+  ! GHIcs は clear_sky_ghi_wm2。夜間は GHIcs=0 のため自動的に 0 を返す。
+  ! cloud_cover_pct は 0–100 [%]（範囲外は 0–100 に clamp）。
+  ! 全雲量のみから GHI を推定する汎用手法（例: 簡易日射推定、日射欠測の物理補間）。
+  !-----------------------------------------------------------------
+  pure real(real64) function cloudy_sky_ghi_wm2( lat_deg, lon_deg, doy, hour_jst, cloud_cover_pct )
+    real(real64), intent(in) :: lat_deg, lon_deg, hour_jst, cloud_cover_pct
+    integer,      intent(in) :: doy
+    real(real64) :: ghics, n
+    ghics = clear_sky_ghi_wm2( lat_deg, lon_deg, doy, hour_jst )
+    n = max( 0.0_real64, min( 100.0_real64, cloud_cover_pct ) ) / 100.0_real64
+    cloudy_sky_ghi_wm2 = ghics * ( 1.0_real64 - 0.75_real64 * n**3.4_real64 )
   end function
 
   !-----------------------------------------------------------------

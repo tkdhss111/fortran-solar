@@ -83,6 +83,21 @@ program unit_test_solar_geometry_mo
     ghics = clear_sky_ghi_wm2( TOKYO_LAT, TOKYO_LON, doy_s, noon )
     call check_range( 'clear-sky GHI plausible (W/m2)', ghics, 700.0_real64, 1050.0_real64, nfail )
 
+    ! 雲量フォールバック（Kasten–Czeplak）: cc=0 → 晴天一致、cc=100 → 0.25×晴天、
+    ! 中間は単調に減衰、夜間は 0。
+    call check_range( 'cloudy(cc=0) == clear-sky', &
+                      cloudy_sky_ghi_wm2( TOKYO_LAT, TOKYO_LON, doy_s, noon, 0.0_real64 ) - ghics, &
+                      -0.5_real64, 0.5_real64, nfail )
+    call check_range( 'cloudy(cc=100) == 0.25*clear-sky', &
+                      cloudy_sky_ghi_wm2( TOKYO_LAT, TOKYO_LON, doy_s, noon, 100.0_real64 ) - 0.25_real64*ghics, &
+                      -0.5_real64, 0.5_real64, nfail )
+    call check_range( 'cloudy(cc=50) within (overcast, clear)', &
+                      cloudy_sky_ghi_wm2( TOKYO_LAT, TOKYO_LON, doy_s, noon, 50.0_real64 ), &
+                      0.25_real64*ghics, ghics, nfail )
+    call check_range( 'cloudy at night == 0', &
+                      cloudy_sky_ghi_wm2( TOKYO_LAT, TOKYO_LON, doy_s, 0.0_real64, 50.0_real64 ), &
+                      -0.001_real64, 0.001_real64, nfail )
+
     ! 晴天相当 GHI → kt 高 → Engerer2 Kd 小・DNI 大、エネルギー保存
     call decompose_engerer2( ghics, TOKYO_LAT, TOKYO_LON, doy_s, noon, dni, dhi, interval_min = 0.0_real64 )
     call check_range( 'clear-day diffuse fraction small', dhi/ghics, 0.0_real64, 0.45_real64, nfail )
